@@ -1,20 +1,43 @@
-import { createContext, useContext, useEffect, useState } from "react";
 import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  IncomingMessageFormat,
   OutgoingMessageFormat,
+  RegisterQueryMessage,
   State as WorkerState,
+  UnregisterQueryMessage,
 } from "../../workers/types";
 import WebsocketsWorker from "../../workers/websockets?sharedworker";
 import { applyPatches, enablePatches } from "immer";
 import { WEBSOCKET_BROADCAST_CHANNEL_NAME } from "../../workers/constants";
+import { v4 as uuidv4 } from "uuid";
+import hash from "hash-sum";
+
+// enable patch functionality for immer
 enablePatches();
 
-const WebsocketsContext = createContext<WebsocketsContext>({
+// global reference to our shared worker script
+const worker = new WebsocketsWorker();
+
+// global reference to the broadcast channel
+const broadcastChannel = new BroadcastChannel(WEBSOCKET_BROADCAST_CHANNEL_NAME);
+
+// create a unique ID for this client instance
+const clientId = uuidv4();
+
+const WebsocketsContext = createContext<WebsocketsContextValue>({
   // requestData: () => undefined,
   state: {},
   message: undefined,
 });
 
-type WebsocketsContext = {
+type WebsocketsContextValue = {
   // requestData: (key: string, query: unknown) => void;
   state: WorkerState;
   message: string | undefined;
@@ -26,19 +49,11 @@ type WebsocketsProviderProps = {
   children: React.ReactChild;
 };
 
-const worker = new WebsocketsWorker();
-const broadcastChannel = new BroadcastChannel(WEBSOCKET_BROADCAST_CHANNEL_NAME);
-
 export const WebsocketsProvider: React.FC<WebsocketsProviderProps> = ({
   children,
 }) => {
   const [state, setState] = useState<WorkerState>({});
   const [message, setMessage] = useState<string>();
-
-  // function requestData(key: string, query: unknown) {
-  //   worker.port.postMessage({ key, query, type: "registerQuery" });
-  // return () => worker.port.postMessage({key, type: 'unregisterQuery' })
-  // }
 
   const value = {
     // requestData,
@@ -74,3 +89,48 @@ export const WebsocketsProvider: React.FC<WebsocketsProviderProps> = ({
 };
 
 export const useWebsockets = () => useContext(WebsocketsContext);
+
+function registerQuery(
+  key: string,
+  query: unknown,
+  queryId: string,
+  pollInterval: number
+) {
+  const msg: RegisterQueryMessage = {
+    action: "registerQuery",
+    queryId,
+    key,
+    query,
+    pollInterval,
+  };
+  worker.port.postMessage(msg);
+}
+
+function unregisterQuery(key: string, queryId: string) {
+  const msg: UnregisterQueryMessage = {
+    action: "unregisterQuery",
+    key,
+    queryId,
+  };
+  worker.port.postMessage(msg);
+}
+
+export function useQuery<T>(query: unknown, pollInterval = 1000): T {
+  const queryId = useRef(uuidv4()).current;
+  const key = useRef(hash(query)).current;
+
+  // derive the current query value from the state
+  const { state } = useWebsockets();
+  const value: T = state[key] as T;
+
+  // unregister the query on unmount
+  useEffect(() => {
+    // register the query with the shared worker
+    registerQuery(key, query, queryId, pollInterval);
+    return () => {
+      unregisterQuery(key, queryId);
+    };
+  }, [key, query, queryId, pollInterval]);
+
+  return value;
+}

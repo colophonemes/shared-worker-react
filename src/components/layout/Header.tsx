@@ -2,7 +2,7 @@ import clsx from "clsx";
 import React from "react";
 
 type HeaderProps = {
-  children: React.ReactChild;
+  children: React.ReactNode;
   className?: string;
 };
 
